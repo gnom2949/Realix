@@ -20,19 +20,22 @@ It supports a built-in boot switcher that lets users choose between a 16-bit Rea
 - Read-only FAT12 filesystem support
   - Loads second-stage bootloader
   - Loads kernel files by filename
+  - Loads 32-bit kernel
 - Detects available system memory (INT 12h, 15h)
 - TTY bell character support
 - 🆕 Interactive CPU mode selector (`switcher.asm`)
 - 🆕 Kernel16: Basic command-line interface
+- Basic Raster Graphics
+- No int 0x80, only sysenter
+- Realix libc 
+- Full FAT32 read/write FS
+- Virtual File System
+- ATA, PCI and serial drivers
 
 ### ⏳ Upcoming Features (v0.07-v0.08)
-- Kernel32: Development of the 32-bit Protected Mode kernel space
-- Kernel32: Direct VGA video/text memory driver
-- Real Mode: Network interface card (NIC) driver
-- Kernel16: Simple calculator
+- Kernel32: Unix time, kernel panic and vash
 
-### ❌ Current Limitations
-- No memory allocator
+### ❌ Current Limitations 
 - No standart executable support
 - No write operations FAT12 support
 - No networking stack
@@ -41,7 +44,7 @@ It supports a built-in boot switcher that lets users choose between a 16-bit Rea
 ![Realix Experience](screencast.gif)
 
 ## 📦 Hardware Requirements
-- **CPU:** x86 compatible (i386+ recommended)
+- **CPU:** x86 compatible (any Pentium II+(FOR KERNEL32)
 - **RAM:** 256 KB or more
 - **Motherboard:** BIOS-supported
 
@@ -89,13 +92,14 @@ It supports a built-in boot switcher that lets users choose between a 16-bit Rea
 
 **Prerequisites**
 * Compiler: `nasm` (Assembly)
+* Compiler: `gcc` (C) or gcc-i386-elf
 * Disk Tools: `mtools` (FAT12 image formatting), `coreutils` (dd/image creation)
 * (Optional) Emulator: `qemu-system-i386`
 
 ### Linux & macOS
 1. Install prerequisites
-  - Ubuntu/Debian example: `sudo apt update && sudo apt install nasm mtools qemu-system-i386`
-  - macOS example (via Homebrew): `brew install nasm mtools qemu`
+  - Ubuntu/Debian example: `sudo apt update && sudo apt install nasm mtools qemu-system-i386 gcc make`
+  - macOS example (via Homebrew): `brew install nasm mtools qemu i686-elf-gcc`
 2. Build & Run via the `Makefile`
   - Only build OS image: `make`
   - Full cycle (build & run in QEMU): `make run`
