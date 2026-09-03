@@ -14,16 +14,17 @@ mod shell;
 mod utils;
 mod x86;
 mod config;
+mod multiboot;
 
 // Подключение функций
 use core::arch::{asm, naked_asm};
 use core::panic::PanicInfo;
-use drivers::{keyboard, pit, vga};
+use drivers::{keyboard, pit, vga, font};
 use memory::{frame_allocator, pmm};
 use crate::pmm::E820Entry;
 use x86::{gdt, idt};
 use crate::config::{PCINFO_ADDR, E820_MAX_ENTRIES};
-
+use crate::multiboot::{MultibootInfo, MULTIBOOT_BL_MAGIC, MULTIBOOT_INFO_FRAMEBUFFER_INFO};
 /// Структура PCINFO, формируемая загрузчиком
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
@@ -73,16 +74,19 @@ unsafe extern "C" {
 #[unsafe(naked)]
 pub extern "C" fn _start() -> ! {
     naked_asm!(
-        // Установка: Сброс DF, edi - начало BSS, ecx - её размер
         "cld",
+        // eax(magic) нужно сохранить до обнуления BSS.
+        "mov edx, eax",
+        // Установка: edi - начало, ecx - размер
         "lea edi, [__bss_start]",
         "lea ecx, [__bss_end]",
         "sub ecx, edi",
         // Обнуляем BSS через eax
         "xor eax, eax",
         "rep stosb",
-        // Передаём адрес PCINFO первым аргументом по cdecl
+        // Аргументы kmain(magic, mb_info) по cdecl
         "push ebx",
+        "push edx",
         "call kmain",
         // Защита на случай незапланированного возвращения из функции
         "2:",
@@ -95,8 +99,9 @@ pub extern "C" fn _start() -> ! {
 /// Основной цикл работы ядра
 /// Параметры:
 ///  - pcinfo_addr: адрес структуры PCINFO, собранной загрузчиком
+///  - mb_info_addr: адрес структуры MultibootInfo, собранной и передаваемой загрузчиком
 #[no_mangle]
-extern "C" fn kmain(pcinfo_addr: *const PcInfo) -> ! {
+extern "C" fn kmain(magic: u32, mb_info_addr: *const MultibootInfo) -> ! {
     // Инициализация модулей
     idt::interrupts_disable();
     gdt::init();
@@ -105,26 +110,42 @@ extern "C" fn kmain(pcinfo_addr: *const PcInfo) -> ! {
     pmm::init_kernel_page_allocator();
     idt::interrupts_enable();
 
-    // Проверка указателя PCINFO
-    if pcinfo_addr.is_null() {
+    // проверка Magic - если не совпал то это не Multiboot-загрузчик или eax потерялся.
+    if magic != MULTIBOOT_BL_MAGIC {
         vga::clear_screen();
-        vga::print_line("[KERNEL PANIC] Invalid PCINFO address.\n", vga::Color::Red);
+        vga::print_line("[KERNEL PANIC] Invalid Multiboot magic.\n", vga::Color::Red);
         halt_loop();
     }
 
-    // Инициализация аллокатора фреймов по карте памяти E820 из PCINFO
-    unsafe {
-        let pcinfo: &PcInfo = &*pcinfo_addr;
-        frame_allocator::init(&pcinfo.memory_map);
-        vga::init(pcinfo.videomode);
+    // проверка указателя multiboot_info_t
+    if mb_info_addr.is_null() {
+        vga::clear_screen();
+        vga::print_line("[KERNEL PANIC] Invalid Multiboot info address.\n", vga::Color::Red);
+        halt_loop();
+    }
 
-        if pcinfo.videomode == 1 {
+    let mb_info: &MultibootInfo = unsafe { &*mb_info_addr };
+
+    // сборка карты памяти из multiboot mmap.
+    let mut mmap_buf = [pmm::E820Entry { address: 0, size: 0, seg_type: 0, attributes: 0}; E820_MAX_ENTRIES];
+    let entry_count = unsafe { mb_info.read_mmap(&mut mmap_buf) };
+
+    let has_fb = mb_info.flags & MULTIBOOT_INFO_FRAMEBUFFER_INFO != 0;
+    let fb_info = if has_fb {
+        Some(vga::FrameBufferInfo { addr: mb_info.framebuffer_addr as u32, pitch: mb_info.framebuffer_pitch, width: mb_info.framebuffer_width, height: mb_info.framebuffer_height, bpp: mb_info.framebuffer_bpp })
+    } else {
+        None
+    };
+
+    unsafe {
+        frame_allocator::init(&mmap_buf[..entry_count]);
+        vga::init(if has_fb { 1 } else { 0 }, fb_info);
+
+        if has_fb {
+            vga::set_comfortaa_font();
             vga::fill_screen(vga::Color::LightCyan);
-            for k in (0..=120).step_by(40) {
-                vga::draw_rect(10, 40, 10 + k, 40 + k, vga::Color::Cyan);
-            }
-            
-            vga::draw_rect(0, 320, 180, 200, vga::Color::Cyan);
+
+            vga::vbe_print_line("Bajoding", vga::Color::White);
         }
     }
 
