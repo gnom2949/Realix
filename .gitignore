@@ -2,3 +2,9 @@
 build/
 tools/
 target/
+source/bootloader/thirdix/assets/*.tga
+source/bootloader/thirdix/assets/*.cfg
+utils/*.rtf
+utils/*.ttf
+utils/ttf2rtf
+utils/*.txt
