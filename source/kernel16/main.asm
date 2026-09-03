@@ -88,7 +88,7 @@ error_handler:
 %include 'bios-api/memory/low.asm'
 %include 'bios-api/keyboard.asm'
 %include 'bios-api/rtc.asm'
-%include 'bios-api/graphics.asm'
+%include 'bios-api/video/graphics.asm'
 %include 'display/memory.asm'
 %include 'filesystem/fat12/file_load.asm'
 %include 'kernel16/shell/cli.asm'
