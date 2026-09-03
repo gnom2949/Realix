@@ -1,12 +1,18 @@
 // © Realix > Driver: VGA
 // ø Inspired by @liquifield
+// Modified by Alexander Silaev <thebinaryblob@gmail.com>
 // (24.08.26) v0.12
 // ================
 // ! Не вызывать из IRQ прерываний (Гонка данных на константах)
+// Добавлена поддержка VBE(Линейный фреймбуфер произвольного адреса/разрешения/bpp).
+// Добавлена поддержка Real Type Font + 8x16 Bitmap для VBE режима.
+// ! - Текст в VBE через RTF, если он не загружен то выводится фолбек в виде bitmap шрифта.
+// Рендер RTF сейчас БЕЗ АНТИАЛИАСИНГА, я думаю доделать это позже, может TODO сделаю.
 
 // Подключение функций
 use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use crate::utils::{self, outb};
+use crate::drivers::font::{FONT_BITMAP, FONT_WIDTH, FONT_HEIGHT, RealTypeFontParser, RTFGlyphMetrics};
 
 // Константы
 const VGA_TEXT_BUFFER: *mut u8 = 0xB8000 as *mut u8;
@@ -26,6 +32,10 @@ const VGA_CURSOR_LOW:  u8 = 0x0F;   // Регистр младшего байт�
 // Позиция курсора
 static CURSOR_ROW: AtomicUsize = AtomicUsize::new(0);
 static CURSOR_COL: AtomicUsize = AtomicUsize::new(0);
+
+// Позиция курсора (в пикселях шрифт может быть непропорциональным, поэтому это не колонка/строка).
+static VBE_CURSOR_X: AtomicUsize = AtomicUsize::new(0);
+static VBE_CURSOR_Y: AtomicUsize = AtomicUsize::new(0);
 
 // Таблица цветов
 #[allow(dead_code)]
@@ -52,27 +62,91 @@ pub enum Color {
 
 /// Общая структура для одноименных функций в видеорежиме и текстовом режиме
 pub struct VideoOps {
-    pub print_line: fn(line: &str, color: Color),
-    pub print_char: fn(char_byte: u8, color: Color),
+    pub print_line:   fn(line: &str, color: Color),
+    pub print_char:   fn(char_byte: u8, color: Color),
     pub clear_screen: fn(),
+    pub set_pixel:    fn(x: usize, y: usize, color: Color),
+    pub fill_screen:  fn(color: Color),
+    pub draw_hline:   fn(x1: usize, x2: usize, y: usize, color: Color),
+    pub draw_vline:   fn(x: usize, y1: usize, y2: usize, color: Color),
+    pub draw_rect:    fn(x1: usize, x2: usize, y1: usize, y2: usize, color: Color),
 }
 
+#[derive(Clone, Copy)]
+pub struct FrameBufferInfo {
+    pub addr:   u32,
+    pub pitch:  u32,
+    pub width:  u32,
+    pub height: u32,
+    pub bpp:    u8,
+}
+
+static mut VBE_FB_ADDR: u32 = 0;
+static mut VBE_PITCH:   u32 = 0;
+static mut VBE_WIDTH:   u32 = 0;
+static mut VBE_HEIGHT:  u32 = 0;
+static mut VBE_BPP:     u8 = 0;
+
+// RTF-Шрифт, пока в realix 32 нет файловой системы приходится загружать прямо вплотную,
+// и тут не знаю когда лид проекта опомнится чтобы сделать хотя бы FAT32 драйвер, хотя он у меня вроде есть но завязан на ATA.
+static mut RTF_FONT: Option<RealTypeFontParser> = None;
+pub const COMFORTAA_DATA: &[u8] = include_bytes!("../../../../utils/comfortaa.rtf");
+pub fn set_comfortaa_font()
+{
+    let parser = RealTypeFontParser::new(COMFORTAA_DATA);
+    if let Some(header) = parser.get_header() {
+        
+    }
+}
+
+pub fn set_font(font: RealTypeFontParser) {
+    unsafe { RTF_FONT = Some(font); }
+}
+
+pub fn clear_font() {
+    unsafe { RTF_FONT = None; }
+}
 
 /// Инициализация OPS, используя структуру VideoOps
-pub fn init(videomode: u16) {
+/// Параметры:
+/// - videomode: 0 - VGA Text, 1 - VBE.
+/// - framebuffer: обязателен для videomode 1.
+pub fn init(videomode: u16, framebuffer: Option<FrameBufferInfo>) {
     unsafe {
         OPS = match videomode {
             0 => VideoOps {
-                print_line: text_print_line,
-                print_char: text_print_char,
-                clear_screen: text_clear_screen,
+                print_line:     text_print_line,
+                print_char:     text_print_char,
+                clear_screen:   text_clear_screen,
+                set_pixel:      text_noop_set_pixel,
+                fill_screen:    text_noop_fill_screen,
+                draw_hline:     text_noop_draw_hline,
+                draw_vline:     text_noop_draw_vline,
+                draw_rect:      text_noop_draw_rect,
             },
 
-            // ! Пока что в видеорежиме нет таких обработчиков, оставляем заглушки
-            1 => VideoOps {
-                print_line: text_print_line,
-                print_char: text_print_char,
-                clear_screen: text_clear_screen,
+            1 => {
+                if let Some(fb) = framebuffer {
+                    VBE_FB_ADDR = fb.addr;
+                    VBE_PITCH   = fb.pitch;
+                    VBE_BPP     = fb.bpp;
+                    VBE_WIDTH   = fb.width;
+                    VBE_HEIGHT  = fb.height;
+                }
+
+                VBE_CURSOR_X.store(0, Relaxed);
+                VBE_CURSOR_Y.store(0, Relaxed);
+
+                VideoOps {
+                    print_line:     vbe_print_line,
+                    print_char:     vbe_print_char,
+                    clear_screen:   vbe_clear_screen,
+                    set_pixel:      vbe_set_pixel,
+                    fill_screen:    vbe_fill_screen,
+                    draw_hline:     vbe_draw_hline,
+                    draw_vline:     vbe_draw_vline,
+                    draw_rect:      vbe_draw_rect,
+                }
             },
             _ => panic!("unsupported video mode"),
         };
@@ -80,21 +154,238 @@ pub fn init(videomode: u16) {
 }
 
 
+
 // Основной интерфейс (Дефолтный)
 static mut OPS: VideoOps = VideoOps {
     print_line: text_print_line,
     print_char: text_print_char,
     clear_screen: text_clear_screen,
+    set_pixel: text_noop_set_pixel,
+    fill_screen: text_noop_fill_screen,
+    draw_hline: text_noop_draw_hline,
+    draw_vline: text_noop_draw_vline,
+    draw_rect: text_noop_draw_rect,
 };
 
 // Публичный интерфейс модуля
 pub fn clear_screen() { unsafe { (OPS.clear_screen)() } }
 pub fn print_char(char_byte: u8, color: Color) { unsafe { (OPS.print_char)(char_byte, color) } }
 pub fn print_line(line: &str, color: Color) { unsafe { (OPS.print_line)(line, color) } }
+pub fn fill_screen(color: Color) { unsafe { (OPS.fill_screen)(color) } }
+pub fn draw_hline(x1: usize, x2: usize, y: usize, color: Color) { unsafe { (OPS.draw_hline)(x1, x2, y, color) } }
+pub fn draw_vline(x: usize, y1: usize, y2: usize, color: Color) { unsafe { (OPS.draw_vline)(x, y1, y2, color) } }
+pub fn draw_rect(x1: usize, x2: usize, y1: usize, y2: usize, color: Color) { unsafe { (OPS.draw_rect)(x1, x2, y1, y2, color) } }
 
+// Заглушки для текстового режима
+fn text_noop_set_pixel(_x: usize, _y: usize, _color: Color) {}
+fn text_noop_fill_screen(_color: Color) {}
+fn text_noop_draw_hline(_x1: usize, _x2: usize, _y: usize, _color: Color) {}
+fn text_noop_draw_vline(_x: usize, _y1: usize, _y2: usize, _color: Color) {}
+fn text_noop_draw_rect(_x1: usize, _x2: usize, _y1: usize, _y2: usize, _color: Color) {}
+
+// VBE: RGB Truecolor
+fn color_to_rgb32(color: Color) -> u32 {
+    match color {
+        Color::Black      => 0x000000,
+        Color::Blue       => 0x0000AA,
+        Color::Green      => 0x00AA00,
+        Color::Cyan       => 0x00AAAA,
+        Color::Red        => 0xAA0000,
+        Color::Magenta    => 0xAA00AA,
+        Color::Brown      => 0xAA5500,
+        Color::LightGray  => 0xAAAAAA,
+        Color::DarkGray   => 0x555555,
+        Color::LightBlue  => 0x5555FF,
+        Color::LightGreen => 0x55FF55,
+        Color::LightCyan  => 0x55FFFF,
+        Color::LightRed   => 0xFF5555,
+        Color::Pink       => 0xFF55FF,
+        Color::Yellow     => 0xFFFF55,
+        Color::White      => 0xFFFFFF,
+    }
+}
+
+pub fn vbe_set_pixel(x: usize, y: usize, color: Color) {
+    unsafe {
+        if VBE_FB_ADDR == 0 || x >= VBE_WIDTH as usize || y >= VBE_HEIGHT as usize {
+            return;
+        }
+ 
+        let rgb = color_to_rgb32(color);
+        let bytes_per_pixel = (VBE_BPP as usize) / 8;
+        let offset = y * VBE_PITCH as usize + x * bytes_per_pixel;
+        let pixel_ptr = (VBE_FB_ADDR as usize + offset) as *mut u8;
+ 
+        match VBE_BPP {
+            32 => {
+                (pixel_ptr as *mut u32).write_volatile(rgb);
+            }
+            24 => {
+                pixel_ptr.write_volatile((rgb & 0xFF) as u8);
+                pixel_ptr.add(1).write_volatile(((rgb >> 8) & 0xFF) as u8);
+                pixel_ptr.add(2).write_volatile(((rgb >> 16) & 0xFF) as u8);
+            }
+            _ => {} // 16/15/8bpp не поддержаны
+        }
+    }
+}
+ 
+pub fn vbe_fill_screen(color: Color) {
+    unsafe {
+        if VBE_FB_ADDR == 0 {
+            return;
+        }
+        for y in 0..VBE_HEIGHT as usize {
+            for x in 0..VBE_WIDTH as usize {
+                vbe_set_pixel(x, y, color);
+            }
+        }
+    }
+}
+ 
+pub fn vbe_draw_hline(x1: usize, x2: usize, y: usize, color: Color) {
+    for curr_x in x1..=x2 {
+        vbe_set_pixel(curr_x, y, color);
+    }
+}
+ 
+pub fn vbe_draw_vline(x: usize, y1: usize, y2: usize, color: Color) {
+    for curr_y in y1..=y2 {
+        vbe_set_pixel(x, curr_y, color);
+    }
+}
+ 
+pub fn vbe_draw_rect(x1: usize, x2: usize, y1: usize, y2: usize, color: Color) {
+    for curr_y in y1..=y2 {
+        vbe_draw_hline(x1, x2, curr_y, color);
+    }
+}
+ 
+pub fn vbe_clear_screen() {
+    unsafe {
+        if VBE_FB_ADDR != 0 {
+            let total_bytes = VBE_PITCH as usize * VBE_HEIGHT as usize;
+            let fb = VBE_FB_ADDR as usize as *mut u8;
+            for i in 0..total_bytes {
+                fb.add(i).write_volatile(0);
+            }
+        }
+    }
+    VBE_CURSOR_X.store(0, Relaxed);
+    VBE_CURSOR_Y.store(0, Relaxed);
+}
+ 
+pub fn vbe_width() -> u32 { unsafe { VBE_WIDTH } }
+pub fn vbe_height() -> u32 { unsafe { VBE_HEIGHT } }
+
+// VBE: текст RTF как основа, bitmap как фолбек
+
+// Рисует один RTF глиф, жёсткий порог без сглаживания, сэмплирует атлас 1 к 1.
+fn vbe_draw_glyph_rtf(font: &RealTypeFontParser, glyph: &RTFGlyphMetrics, x: usize, y: usize, fg: Color) {
+    let draw_x = (x as i32 + glyph.offset_x as i32).max(0) as usize;
+    let draw_y = (y as i32 + glyph.offset_y as i32).max(0) as usize;
+ 
+    for row in 0..glyph.tex_h as usize {
+        for col in 0..glyph.tex_w as usize {
+            let sample = font.get_atlas_pixel(glyph.tex_x as usize + col, glyph.tex_y as usize + row);
+            if sample >= 128 {
+                vbe_set_pixel(draw_x + col, draw_y + row, fg);
+            }
+        }
+    }
+}
+ 
+pub fn vbe_draw_char(x: usize, y: usize, char_byte: u8, fg: Color) -> usize {
+    unsafe {
+        if let Some(font) = &RTF_FONT {
+            if let Some(glyph) = font.find_glyph(char_byte as u32) {
+                vbe_draw_glyph_rtf(font, &glyph, x, y, fg);
+                return glyph.advance_x as usize;
+            }
+            // Шрифт загружен, но глифа для этого символа нет — падаем в bitmap ниже, а не молчим.
+        }
+    }
+ 
+    let index = if (char_byte as usize) < FONT_BITMAP.len() { char_byte as usize } else { b'?' as usize };
+    let glyph_rows = &FONT_BITMAP[index];
+ 
+    for row in 0..FONT_HEIGHT {
+        let bits = glyph_rows[row];
+        for col in 0..FONT_WIDTH {
+            if (bits >> (7 - col)) & 1 != 0 {
+                vbe_set_pixel(x + col, y + row, fg);
+            }
+        }
+    }
+ 
+    FONT_WIDTH
+}
+ 
+pub fn vbe_print_char(char_byte: u8, color: Color) {
+    match char_byte {
+        b'\n' => {
+            VBE_CURSOR_X.store(0, Relaxed);
+            VBE_CURSOR_Y.fetch_add(FONT_HEIGHT, Relaxed);
+        }
+        b'\r' => { VBE_CURSOR_X.store(0, Relaxed); }
+        _ => {
+            let x = VBE_CURSOR_X.load(Relaxed);
+            let y = VBE_CURSOR_Y.load(Relaxed);
+            let advance = vbe_draw_char(x, y, char_byte, color);
+            VBE_CURSOR_X.fetch_add(advance, Relaxed);
+        }
+    }
+ 
+    let width = unsafe { VBE_WIDTH as usize };
+    if width > 0 && VBE_CURSOR_X.load(Relaxed) + FONT_WIDTH > width {
+        VBE_CURSOR_X.store(0, Relaxed);
+        VBE_CURSOR_Y.fetch_add(FONT_HEIGHT, Relaxed);
+    }
+ 
+    let height = unsafe { VBE_HEIGHT as usize };
+    while height > 0 && VBE_CURSOR_Y.load(Relaxed) + FONT_HEIGHT > height {
+        vbe_scroll_up(FONT_HEIGHT);
+    }
+}
+ 
+pub fn vbe_print_line(line: &str, color: Color) {
+    for byte in line.bytes() {
+        vbe_print_char(byte, color);
+    }
+}
+ 
+fn vbe_scroll_up(pixel_lines: usize) {
+    unsafe {
+        if VBE_FB_ADDR == 0 {
+            return;
+        }
+ 
+        let pitch = VBE_PITCH as usize;
+        let height = VBE_HEIGHT as usize;
+ 
+        if pixel_lines >= height {
+            vbe_clear_screen();
+            return;
+        }
+ 
+        let fb = VBE_FB_ADDR as usize as *mut u8;
+        let move_bytes = (height - pixel_lines) * pitch;
+ 
+        core::ptr::copy(fb.add(pixel_lines * pitch), fb, move_bytes);
+ 
+        // Затираем освободившиеся строки снизу
+        let clear_start = fb.add(move_bytes);
+        for i in 0..(pixel_lines * pitch) {
+            clear_start.add(i).write_volatile(0);
+        }
+    }
+ 
+    let row = VBE_CURSOR_Y.load(Relaxed);
+    VBE_CURSOR_Y.store(row.saturating_sub(pixel_lines), Relaxed);
+}
 
 /// Отдельно от OPS — эта функция вообще не должна дёргаться в текстовом режиме
-pub fn set_pixel(x: usize, y: usize, color: Color) {
+pub fn vga_video_set_pixel(x: usize, y: usize, color: Color) {
     if x >= VGA_VIDEO_WIDTH || y > VGA_VIDEO_HEIGHT {
         return;
     }
@@ -106,7 +397,7 @@ pub fn set_pixel(x: usize, y: usize, color: Color) {
 }
 
 /// Вывод строки на экран (VGA Video)
-pub fn fill_screen(color: Color) {
+pub fn vga_video_fill_screen(color: Color) {
     for i in 0..VGA_VIDEO_WIDTH * VGA_VIDEO_HEIGHT {
         unsafe { VGA_VIDEO_BUFFER.add(i).write_volatile(color as u8); }
     }
@@ -114,21 +405,21 @@ pub fn fill_screen(color: Color) {
 
 
 /// Отрисовка горизонтальной линии (VGA Video)
-pub fn draw_hline(x1: usize, x2: usize, y: usize, color: Color) {
+pub fn vga_video_draw_hline(x1: usize, x2: usize, y: usize, color: Color) {
     for curr_x in x1..=x2 {
-        set_pixel(curr_x, y, color);
+        vga_video_set_pixel(curr_x, y, color);
     }
 }
 
 /// Отрисовка вертикальной линии (VGA Video)
-pub fn draw_vline(x: usize, y1: usize, y2: usize, color: Color) {
+pub fn vga_video_draw_vline(x: usize, y1: usize, y2: usize, color: Color) {
     for curr_y in y1..=y2 {
-        set_pixel(x, curr_y, color);
+        vga_video_set_pixel(x, curr_y, color);
     }
 }
 
 /// Отрисовка вертикальной линии (VGA Video)
-pub fn draw_rect(x1: usize, x2: usize, y1: usize, y2: usize, color: Color) {
+pub fn vga_video_draw_rect(x1: usize, x2: usize, y1: usize, y2: usize, color: Color) {
     // Рисуем циклично горизонтальные строки
     for curr_y in y1..=y2 {
         draw_hline(x1, x2, curr_y, color);
