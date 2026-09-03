@@ -35,7 +35,7 @@ fn bitmap() -> &'static mut [u8; BITMAP_SIZE] {
 }
 
 /// Инициализация аллокатора фреймов на основе карты памяти E820
-pub fn init(memory_map: &[pmm::E820Entry; E820_MAX_ENTRIES]) {
+pub fn init(memory_map: &[pmm::E820Entry]) {
     // Очищаем битмап: Все фреймы помечаем как занятые
     bitmap().fill(0xFF);
 
