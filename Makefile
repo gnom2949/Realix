@@ -19,6 +19,7 @@ SUBMAKE_VARS := BUILD_DIR=$(abspath $(BUILD_DIR)) SRC_DIR=$(abspath $(SRC_DIR))
 IMAGE        := $(BUILD_DIR)/realix.img
 BOOTIX_BIN   := $(BUILD_DIR)/bootix.bin
 INITRIX_BIN  := $(BUILD_DIR)/initrix.bin
+THIRDIX_BIN  := $(BUILD_DIR)/thirdix.bin
 KERNEL16_BIN := $(BUILD_DIR)/kernel16.bin
 KERNEL32_BIN := $(BUILD_DIR)/kernel32.bin
 APPS_SRC     := $(shell find $(APPS_DIR) -name '*.asm')
@@ -52,7 +53,7 @@ bootloader:
 	$(MAKE) -C $(BOOTLOADER_DIR) $(SUBMAKE_VARS)
 
 # Сборка отдельных стадий загрузчика
-bootix initrix:
+bootix initrix thirdix:
 	$(MAKE) -C $(BOOTLOADER_DIR) $(SUBMAKE_VARS) $@
 
 
@@ -92,7 +93,6 @@ run-nova-nokvm: floppy
 # Подготовка к сборке
 always:
 	mkdir -p $(BUILD_DIR)
-
 
 # Очистка
 clean:
