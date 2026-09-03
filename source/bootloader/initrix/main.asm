@@ -19,6 +19,8 @@ org 0x0
 ; Параметры:
 ;  - dl: номер загрузочного диска (Передаётся из Bootix - stage 1)
 main:
+    call clear_screen
+
     ; Вывод сообщения о запуске инициализации
     mov si, msg_init
     call print
@@ -62,7 +64,7 @@ main:
     movzx ax, byte [curr_drive_num]
     mov [es:PCINFO_ADDR + PCINFO_DRIVE], ax         ; 16: Номер загрузочного диска
     mov ax, 0                                       ; ++
-    mov [es:PCINFO_ADDR + PCINFO_VIDEOMODE], 0      ; 16: Номер видеорежима
+    mov word [es:PCINFO_ADDR + PCINFO_VIDEOMODE], 0      ; 16: Номер видеорежима
 
     ; Вывод заголовка загрузочного экрана
     call clear_screen
@@ -83,6 +85,11 @@ main:
     call show_map_entries_cnt
     call print_new_line
     call print_new_line
+
+    call vbe_try_init
+
+    call check_flagz_lrmk
+    jc load_kernel16
 
     ; Переход в модуль выбора ядра
     jmp boot_switcher
@@ -125,12 +132,13 @@ error_handler:
 %include 'bios-api/memory/low.asm'
 %include 'bios-api/keyboard.asm'
 %include 'bios-api/rtc.asm'
-%include 'bios-api/graphics.asm'
+%include 'bios-api/video/graphics.asm'
+%include 'bios-api/video/vbe.asm'
 %include 'display/memory.asm'
 %include 'filesystem/fat12/file_load.asm'
-; %include 'drivers/network_rtl8139.asm'
+; %include 'drivers/network_rtl8139.asm' ; шо це такое?????
 %include 'bootloader/initrix/switcher.asm'
-
+%include 'bios-api/memory/cmos.asm'
 ; Сообщения
 msg_init:  db '[+] Initializing...', ENTER, 0
 str_title:

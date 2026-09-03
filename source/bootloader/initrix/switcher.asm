@@ -243,7 +243,7 @@ pmode_entry:
 
     ; Передача управления Rust-ядру
     mov ebx, PCINFO_ADDR
-    mov eax, KERNEL32_PHYS_ADDR
+    mov eax, THIRDIX_PHYS_ADDR
     jmp eax
 
     ; Остановка CPU (Если ядро Rust вернуло управление)
