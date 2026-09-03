@@ -10,9 +10,9 @@ ASMFLAGS  := -f bin -i $(SRC_DIR)
 ASM_SRC := $(shell find $(SRC_DIR) -name '*.asm')
 
 .PHONY: all bootloader bootix initrix clean
-
+SUBMAKE_VARS := BUILD_DIR=$(abspath $(BUILD_DIR)) SRC_DIR=$(abspath $(SRC_DIR))
 # Запуск по умолчанию
-all: bootix initrix
+all: bootix initrix thirdix
 
 # Сборка Bootix
 bootix: $(BUILD_DIR)/bootix.bin
@@ -25,6 +25,12 @@ initrix: $(BUILD_DIR)/initrix.bin
 
 $(BUILD_DIR)/initrix.bin: $(ASM_SRC) | $(BUILD_DIR)
 	$(ASM) $(ASMFLAGS) $(SRC_DIR)/bootloader/initrix/main.asm -o $@
+
+# Сборка Thirdix
+thirdix: $(BUILD_DIR)/thirdix.bin
+
+$(BUILD_DIR)/thirdix.bin:
+	$(MAKE) -C thirdix $(SUBMAKE_VARS) 
 
 $(BUILD_DIR):
 	mkdir -p $@
